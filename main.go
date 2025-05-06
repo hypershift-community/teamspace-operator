@@ -27,6 +27,7 @@ var (
 type Options struct {
 	InfraJSONPath string
 	IAMJSONPath   string
+	APIServerHost string
 }
 
 func init() {
@@ -45,15 +46,18 @@ including RBAC, service accounts, kubeconfig generation, HostedCluster CRs and m
 	}
 
 	opts := Options{
-		InfraJSONPath: "/work/infra.json",
-		IAMJSONPath:   "/work/iam.json",
+		InfraJSONPath: "./files/infra.json",
+		IAMJSONPath:   "./files/iam.json",
+		APIServerHost: "",
 	}
 
 	cmd.Flags().StringVar(&opts.InfraJSONPath, "infra-json", "", "Path to the infrastructure JSON file")
 	cmd.Flags().StringVar(&opts.IAMJSONPath, "iam-json", "", "Path to the IAM JSON file")
+	cmd.Flags().StringVar(&opts.APIServerHost, "api-server-host", "", "API Server URL (e.g. https://api.example.com:6443)")
 
 	cmd.MarkFlagRequired("infra-json")
 	cmd.MarkFlagRequired("iam-json")
+	cmd.MarkFlagRequired("api-server-host")
 
 	cmd.Run = func(cmd *cobra.Command, args []string) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -79,7 +83,7 @@ including RBAC, service accounts, kubeconfig generation, HostedCluster CRs and m
 func run(ctx context.Context, opts Options) error {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:         scheme,
-		Metrics:        server.Options{BindAddress: ":8080"},
+		Metrics:        server.Options{BindAddress: "0"},
 		LeaderElection: false,
 	})
 	if err != nil {
@@ -90,6 +94,7 @@ func run(ctx context.Context, opts Options) error {
 		Client:        mgr.GetClient(),
 		InfraJSONPath: opts.InfraJSONPath,
 		IAMJSONPath:   opts.IAMJSONPath,
+		APIServerHost: opts.APIServerHost,
 	}
 
 	if err = reconciler.SetupWithManager(mgr); err != nil {

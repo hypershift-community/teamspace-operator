@@ -62,6 +62,12 @@ func (r *teamNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	nsPatchRole := fmt.Sprintf("%s-namespace-patch", teamspace)
 	nsPatchBinding := fmt.Sprintf("%s-namespace-patch-binding", teamspace)
 
+	// Get the HC release from the namespace labels.
+	release := "quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi"
+	if r := namespace.Annotations["release"]; r != "" {
+		release = r
+	}
+
 	// Create ServiceAccount
 	sa := &corev1.ServiceAccount{
 		TypeMeta: metav1.TypeMeta{
@@ -283,9 +289,15 @@ func (r *teamNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Get the server URL from the current context
-	config, err := ctrl.GetConfig()
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to get kubeconfig: %w", err)
+	var serverURL string
+	if r.APIServerHost != "" {
+		serverURL = r.APIServerHost
+	} else {
+		config, err := ctrl.GetConfig()
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get kubeconfig: %w", err)
+		}
+		serverURL = config.Host
 	}
 
 	// Create kubeconfig secret
@@ -307,7 +319,7 @@ contexts:
     user: %s
     namespace: %s
 current-context: %s
-`, clusterName, config.Host, base64.StdEncoding.EncodeToString(tokenSecret.Data["ca.crt"]),
+`, clusterName, serverURL, base64.StdEncoding.EncodeToString(tokenSecret.Data["ca.crt"]),
 		userName, string(tokenSecret.Data["token"]),
 		contextName, clusterName, userName, teamspace,
 		contextName)
@@ -339,7 +351,7 @@ current-context: %s
 		return ctrl.Result{}, fmt.Errorf("failed to get infra config: %w", err)
 	}
 
-	if err := r.createHypershiftCluster(ctx, iamConfig, infraConfig, teamspace); err != nil {
+	if err := r.createHypershiftCluster(ctx, iamConfig, infraConfig, teamspace, release); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create Hosted Cluster: %w", err)
 	}
 
@@ -426,12 +438,21 @@ func (r *teamNamespaceReconciler) getInfraConfig() (*InfraConfig, error) {
 	return infraCondig, nil
 }
 
-func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, iamConfig *IAMConfig, infraConfig *InfraConfig, namespace string) error {
+func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, iamConfig *IAMConfig, infraConfig *InfraConfig, namespace string, release string) error {
 	if err := r.reconcileTeamspacesSecrets(ctx, namespace); err != nil {
 		return fmt.Errorf("failed to reconcile teamspaces secrets: %w", err)
 	}
 
+	cidr, err := ipnet.ParseCIDR(infraConfig.MachineCIDR)
+	if err != nil {
+		return fmt.Errorf("invalid MachineCIDR: %w", err)
+	}
+
 	hc := &hypershiftv1.HostedCluster{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "HostedCluster",
+			APIVersion: "hypershift.openshift.io/v1beta1",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "dev",
 			Namespace: namespace,
@@ -468,10 +489,7 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 					}},
 				},
 				MachineNetwork: []hypershiftv1.MachineNetworkEntry{
-					{CIDR: ipnet.IPNet{
-						IP:   net.ParseIP(infraConfig.MachineCIDR),
-						Mask: net.CIDRMask(32, 32),
-					}},
+					{CIDR: *cidr},
 				},
 				NetworkType: hypershiftv1.OVNKubernetes,
 				ServiceNetwork: []hypershiftv1.ServiceNetworkEntry{
@@ -507,13 +525,13 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 				},
 			},
 			Release: hypershiftv1.Release{
-				Image: "quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi",
+				Image: release,
 			},
 			PullSecret: corev1.LocalObjectReference{
 				Name: "dev-pull-secret",
 			},
 			ServiceAccountSigningKey: &corev1.LocalObjectReference{
-				Name: "sa-signing-key",
+				Name: "dev-sa-signing-key",
 			},
 			SecretEncryption: &hypershiftv1.SecretEncryptionSpec{
 				Type: hypershiftv1.AESCBC,
@@ -559,8 +577,50 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 		return fmt.Errorf("failed to apply HostedCluster: %w", err)
 	}
 
-	return nil
+	np := &hypershiftv1.NodePool{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "NodePool",
+			APIVersion: "hypershift.openshift.io/v1beta1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dev-us-east-1a",
+			Namespace: namespace,
+		},
+		Spec: hypershiftv1.NodePoolSpec{
+			Arch:        "amd64",
+			ClusterName: "dev",
+			Management: hypershiftv1.NodePoolManagement{
+				AutoRepair:  false,
+				UpgradeType: hypershiftv1.UpgradeTypeReplace,
+			},
+			NodeDrainTimeout:        &metav1.Duration{Duration: 0},
+			NodeVolumeDetachTimeout: &metav1.Duration{Duration: 0},
+			Platform: hypershiftv1.NodePoolPlatform{
+				AWS: &hypershiftv1.AWSNodePoolPlatform{
+					InstanceProfile: "teamspaces-worker",
+					InstanceType:    "m5.large",
+					RootVolume: &hypershiftv1.Volume{
+						Size: 120,
+						Type: "gp3",
+					},
+					Subnet: hypershiftv1.AWSResourceReference{
+						ID: ptr.To("subnet-0dfafe3edc70b9324"),
+					},
+				},
+				Type: hypershiftv1.AWSPlatform,
+			},
+			Release: hypershiftv1.Release{
+				Image: release,
+			},
+			Replicas: ptr.To(int32(3)),
+		},
+	}
 
+	if err := r.Patch(ctx, np, client.Apply, client.ForceOwnership, client.FieldOwner("teamspace-controller")); err != nil {
+		return fmt.Errorf("failed to apply NodePool: %w", err)
+	}
+
+	return nil
 }
 
 // reconcileTeamspacesSecrets fetches secrets from the teamspaces namespace and reconciles them into the team namespace
@@ -570,7 +630,7 @@ func (r *teamNamespaceReconciler) reconcileTeamspacesSecrets(ctx context.Context
 		"dev-pull-secret",
 		"dev-ssh-key",
 		"dev-etcd-encryption-key",
-		"sa-signing-key",
+		"dev-sa-signing-key",
 	}
 
 	for _, secretName := range secretsToCopy {

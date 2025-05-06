@@ -26,6 +26,7 @@ type TeamspaceReconciler struct {
 	client.Client
 	InfraJSONPath string
 	IAMJSONPath   string
+	APIServerHost string
 }
 
 // Reconcile handles namespace creation for team workspaces
