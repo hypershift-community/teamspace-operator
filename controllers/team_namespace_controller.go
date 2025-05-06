@@ -531,7 +531,7 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 				Name: "dev-pull-secret",
 			},
 			ServiceAccountSigningKey: &corev1.LocalObjectReference{
-				Name: "sa-signing-key",
+				Name: "dev-sa-signing-key",
 			},
 			SecretEncryption: &hypershiftv1.SecretEncryptionSpec{
 				Type: hypershiftv1.AESCBC,
@@ -630,7 +630,7 @@ func (r *teamNamespaceReconciler) reconcileTeamspacesSecrets(ctx context.Context
 		"dev-pull-secret",
 		"dev-ssh-key",
 		"dev-etcd-encryption-key",
-		"sa-signing-key",
+		"dev-sa-signing-key",
 	}
 
 	for _, secretName := range secretsToCopy {
