@@ -62,6 +62,12 @@ func (r *teamNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	nsPatchRole := fmt.Sprintf("%s-namespace-patch", teamspace)
 	nsPatchBinding := fmt.Sprintf("%s-namespace-patch-binding", teamspace)
 
+	// Get the HC release from the namespace labels.
+	release := "quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi"
+	if r := namespace.Annotations["release"]; r != "" {
+		release = r
+	}
+
 	// Create ServiceAccount
 	sa := &corev1.ServiceAccount{
 		TypeMeta: metav1.TypeMeta{
@@ -339,7 +345,7 @@ current-context: %s
 		return ctrl.Result{}, fmt.Errorf("failed to get infra config: %w", err)
 	}
 
-	if err := r.createHypershiftCluster(ctx, iamConfig, infraConfig, teamspace); err != nil {
+	if err := r.createHypershiftCluster(ctx, iamConfig, infraConfig, teamspace, release); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create Hosted Cluster: %w", err)
 	}
 
@@ -426,7 +432,7 @@ func (r *teamNamespaceReconciler) getInfraConfig() (*InfraConfig, error) {
 	return infraCondig, nil
 }
 
-func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, iamConfig *IAMConfig, infraConfig *InfraConfig, namespace string) error {
+func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, iamConfig *IAMConfig, infraConfig *InfraConfig, namespace string, release string) error {
 	if err := r.reconcileTeamspacesSecrets(ctx, namespace); err != nil {
 		return fmt.Errorf("failed to reconcile teamspaces secrets: %w", err)
 	}
@@ -507,7 +513,7 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 				},
 			},
 			Release: hypershiftv1.Release{
-				Image: "quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi",
+				Image: release,
 			},
 			PullSecret: corev1.LocalObjectReference{
 				Name: "dev-pull-secret",
