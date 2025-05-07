@@ -465,9 +465,10 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 			Autoscaling:                  hypershiftv1.ClusterAutoscaling{},
 			ControllerAvailabilityPolicy: hypershiftv1.SingleReplica,
 			DNS: hypershiftv1.DNSSpec{
-				BaseDomain:    infraConfig.Name + "." + infraConfig.BaseDomain,
-				PrivateZoneID: infraConfig.PrivateZoneID,
-				PublicZoneID:  infraConfig.PublicZoneID,
+				BaseDomainPrefix: &namespace,
+				BaseDomain:       infraConfig.Name + "." + infraConfig.BaseDomain,
+				PrivateZoneID:    infraConfig.PrivateZoneID,
+				PublicZoneID:     infraConfig.PublicZoneID,
 			},
 			Etcd: hypershiftv1.EtcdSpec{
 				ManagementType: hypershiftv1.Managed,
