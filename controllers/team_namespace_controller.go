@@ -2,15 +2,15 @@ package controllers
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
 
-	"encoding/base64"
-	"encoding/json"
-
+	configv1 "github.com/openshift/api/config/v1"
 	hypershiftv1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	ipnet "github.com/openshift/hypershift/api/util/ipnet"
 	corev1 "k8s.io/api/core/v1"
@@ -66,6 +66,10 @@ func (r *teamNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	release := "quay.io/openshift-release-dev/ocp-release:4.19.0-ec.5-multi"
 	if r := namespace.Annotations["release"]; r != "" {
 		release = r
+	}
+	featureSet := ""
+	if f := namespace.Annotations["feature-set"]; f != "" {
+		featureSet = f
 	}
 
 	// Create ServiceAccount
@@ -351,7 +355,7 @@ current-context: %s
 		return ctrl.Result{}, fmt.Errorf("failed to get infra config: %w", err)
 	}
 
-	if err := r.createHypershiftCluster(ctx, iamConfig, infraConfig, teamspace, release); err != nil {
+	if err := r.createHypershiftCluster(ctx, iamConfig, infraConfig, teamspace, release, featureSet); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create Hosted Cluster: %w", err)
 	}
 
@@ -438,7 +442,7 @@ func (r *teamNamespaceReconciler) getInfraConfig() (*InfraConfig, error) {
 	return infraCondig, nil
 }
 
-func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, iamConfig *IAMConfig, infraConfig *InfraConfig, namespace string, release string) error {
+func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, iamConfig *IAMConfig, infraConfig *InfraConfig, namespace, release, featureSet string) error {
 	if err := r.reconcileTeamspacesSecrets(ctx, namespace); err != nil {
 		return fmt.Errorf("failed to reconcile teamspaces secrets: %w", err)
 	}
@@ -459,7 +463,6 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 		},
 		Spec: hypershiftv1.HostedClusterSpec{
 			Autoscaling:                  hypershiftv1.ClusterAutoscaling{},
-			Configuration:                &hypershiftv1.ClusterConfiguration{},
 			ControllerAvailabilityPolicy: hypershiftv1.SingleReplica,
 			DNS: hypershiftv1.DNSSpec{
 				BaseDomain:    infraConfig.Name + "." + infraConfig.BaseDomain,
@@ -573,6 +576,16 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 		},
 	}
 
+	if featureSet != "" {
+		hc.Spec.Configuration = &hypershiftv1.ClusterConfiguration{
+			FeatureGate: &configv1.FeatureGateSpec{
+				FeatureGateSelection: configv1.FeatureGateSelection{
+					FeatureSet: configv1.FeatureSet(featureSet),
+				},
+			},
+		}
+	}
+
 	if err := r.Patch(ctx, hc, client.Apply, client.ForceOwnership, client.FieldOwner("teamspace-controller")); err != nil {
 		return fmt.Errorf("failed to apply HostedCluster: %w", err)
 	}
@@ -609,6 +622,7 @@ func (r *teamNamespaceReconciler) createHypershiftCluster(ctx context.Context, i
 				},
 				Type: hypershiftv1.AWSPlatform,
 			},
+
 			Release: hypershiftv1.Release{
 				Image: release,
 			},
